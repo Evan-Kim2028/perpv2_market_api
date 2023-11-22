@@ -19,8 +19,7 @@ SNX_DECIMALS = 10**18
 @dataclass
 class SNXMarketPipe:
     """
-    SNXMarket calls external functions from Synthetix V2 contracts.
-    The output is saved to a list of tuple data.
+    SNXMarket calls external functions from Synthetix V2 contracts. Data is minimally processed and saved as dataclasses
     """
     load_dotenv()
     node = Web3(Web3.HTTPProvider(os.getenv("OPTIMISM_RPC")))
@@ -190,30 +189,6 @@ class SNXMarketPipe:
                 perps_address_list.append(perpv2_directory)
         return perps_address_list
 
-    def clean_market_details(self, market_data: dict) -> MarketDetails:
-        return MarketDetails(
-            market=market_data['market'],
-            baseAsset=market_data['baseAsset'].decode("utf-8").split('\x00')[0],
-            marketKey=market_data['marketKey'].decode("utf-8").split('\x00')[0],
-            takerFee=market_data['takerFee'] / SNX_DECIMALS,
-            makerFee=market_data['makerFee'] / SNX_DECIMALS,
-            takerFeeDelayedOrder=market_data['takerFeeDelayedOrder'] / SNX_DECIMALS,
-            makerFeeDelayedOrder=market_data['makerFeeDelayedOrder'] / SNX_DECIMALS,
-            takerFeeOffchainDelayedOrder=market_data['takerFeeOffchainDelayedOrder'] / SNX_DECIMALS,
-            makerFeeOffchainDelayedOrder=market_data['makerFeeOffchainDelayedOrder'] / SNX_DECIMALS,
-            maxLeverage=market_data['maxLeverage'] / SNX_DECIMALS,
-            maxMarketValue=market_data['maxMarketValue'] / SNX_DECIMALS,
-            maxFundingVelocity=market_data['maxFundingVelocity'] / SNX_DECIMALS,
-            skewScale=market_data['skewScale'] / SNX_DECIMALS,
-            marketSize=market_data['marketSize'] / SNX_DECIMALS,
-            long=market_data['long'] / SNX_DECIMALS,
-            short=market_data['short'] / SNX_DECIMALS,
-            marketDebt=market_data['marketDebt'] / SNX_DECIMALS,
-            marketSkew=market_data['marketSkew'] / SNX_DECIMALS,
-            price=market_data['price'] / SNX_DECIMALS,
-            invalid=market_data['invalid']
-        )
-
     def update_market_param_df(self) -> List[MarketDetails]:
         """
         Call this periodically to retrieve a list of the most up to date market parameters. Loops through
@@ -227,7 +202,33 @@ class SNXMarketPipe:
         for market in perps_addresses_list:
             raw_data = self.get_market_details(market=market.address)
             market_summary = self.clean_market_details(raw_data['results'])
-            final_data.append(market_summary)
+
+            # preprocess market parameters
+            # - Decodes bytedata into strings
+            # - Applies decimal converesion
+            market_details: MarketDetails = MarketDetails(
+                market=market_summary['market'],
+                baseAsset=market_summary['baseAsset'].decode("utf-8").split('\x00')[0],
+                marketKey=market_summary['marketKey'].decode("utf-8").split('\x00')[0],
+                takerFee=market_summary['takerFee'] / SNX_DECIMALS,
+                makerFee=market_summary['makerFee'] / SNX_DECIMALS,
+                takerFeeDelayedOrder=market_summary['takerFeeDelayedOrder'] / SNX_DECIMALS,
+                makerFeeDelayedOrder=market_summary['makerFeeDelayedOrder'] / SNX_DECIMALS,
+                takerFeeOffchainDelayedOrder=market_summary['takerFeeOffchainDelayedOrder'] / SNX_DECIMALS,
+                makerFeeOffchainDelayedOrder=market_summary['makerFeeOffchainDelayedOrder'] / SNX_DECIMALS,
+                maxLeverage=market_summary['maxLeverage'] / SNX_DECIMALS,
+                maxMarketValue=market_summary['maxMarketValue'] / SNX_DECIMALS,
+                maxFundingVelocity=market_summary['maxFundingVelocity'] / SNX_DECIMALS,
+                skewScale=market_summary['skewScale'] / SNX_DECIMALS,
+                marketSize=market_summary['marketSize'] / SNX_DECIMALS,
+                long=market_summary['long'] / SNX_DECIMALS,
+                short=market_summary['short'] / SNX_DECIMALS,
+                marketDebt=market_summary['marketDebt'] / SNX_DECIMALS,
+                marketSkew=market_summary['marketSkew'] / SNX_DECIMALS,
+                price=market_summary['price'] / SNX_DECIMALS,
+                invalid=market_summary['invalid']
+            )
+            final_data.append(market_details)
 
         return final_data
 
@@ -257,22 +258,23 @@ class SNXMarketPipe:
 @dataclass
 class SNXMarketData:
     """
-    Class for the SNX market data.
+    This is the main class to interact to retrieve raw data and combine together for usage. 
     """
     pipe = SNXMarketPipe()
 
     def __post_init__(self):
         pass
 
-    def preprocess_raw_market_summary_array(self, block=0) -> list[SNXMarketSummaryStruct]:
+    def preprocess_raw_market_summary_array(self, block: int = 0) -> list[SNXMarketSummaryStruct]:
         """
-        `preprocess_raw_market_summary_array()` replaces `combine_cleaned_market_data()` and is
+        `preprocess_raw_market_summary_array()` is
         used to process raw market data obtained from `SNXMarketPipe` into `list[MarketSummaryStruct].
 
-        - Perp markets are filtered out if they are legacy v1 perps and if they do not exist on Binance.
+        To query historical blocks, set the block number to a nonzero value.
+
+        - Note that legacy perp v1 markets are filtered out automatically.
         """
 
-        # TODO - raw data, replace with preprocessed data
         market_data = self.pipe.get_all_market_summaries(block)
 
         market_summary_array = []
@@ -286,7 +288,7 @@ class SNXMarketData:
             market_summary.block = market_data['block']
             market_summary.timestamp = market_data['timestamp']
 
-            # filters for only perps v2 markets
+            # filters out perp v1 legacy markets
             if market_summary.key.endswith("PERP"):
                 market_summary_array.append(market_summary)
 
@@ -294,8 +296,6 @@ class SNXMarketData:
 
     def preprocess_raw_market_summary(self, market_data: dict) -> SNXMarketSummaryStruct:
         """
-        formally known as `clean_market_summaries()`.
-
         Clean market data and return a MarketSummary struct for a single market. 
         - Decodes bytedata into strings
         - Applies decimal converesion
@@ -319,7 +319,7 @@ class SNXMarketData:
 
     def transform_df(self, snx_market_df: pl.DataFrame) -> pl.DataFrame:
         """
-        `transform_df() is the major preprocessing dataframe step for Synthetix. Adds
+        `transform_df() is the major preprocessing dataframe step for Synthetix to obtain price impact and usd values. Adds
         - `premium_0`, `executionPrice`, `price_impact_full_rebalance`, `relative_market_skew_corrected_percent`, 
         `total_marketSize_usd`, `marketSkew_usd`, `proportional_marketSize_usd`, `proportional_marketSkew_usd`
         """
